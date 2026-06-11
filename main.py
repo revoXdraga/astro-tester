@@ -20,18 +20,18 @@ tokens = {
 
 SILENCE_FRAME = b'\xf8\xff\xfe'
 
+streaming_active = {}
 
-def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
+
+def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name, main_ws):
     from nacl.secret import SecretBox
-    print(f"[{bot_name}] Starting voice connection to {endpoint}")
+    print(f"[{bot_name}] Connecting voice to {endpoint}")
 
     voice_ws = websocket.WebSocket()
     voice_ws.connect(f"wss://{endpoint}/?v=4", timeout=15)
-    print(f"[{bot_name}] Connected to voice gateway")
 
     vhello = json.loads(voice_ws.recv())
     v_heartbeat_interval = vhello['d']['heartbeat_interval'] / 1000.0
-    print(f"[{bot_name}] Voice HELLO received, heartbeat={v_heartbeat_interval}s")
 
     voice_ws.send(json.dumps({
         "op": 0,
@@ -42,7 +42,6 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
             "token": v_token
         }
     }))
-    print(f"[{bot_name}] Voice IDENTIFY sent")
 
     v_heartbeat = time.time()
     ssrc = None
@@ -51,12 +50,10 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
     while True:
         vmsg = voice_ws.recv()
         if not vmsg:
-            print(f"[{bot_name}] Voice WS closed")
             voice_ws.close()
             return
         vdata = json.loads(vmsg)
         op = vdata.get('op')
-        print(f"[{bot_name}] Voice op={op}")
 
         if op == 1:
             voice_ws.send(json.dumps({"op": 11, "d": None}))
@@ -80,22 +77,49 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
                     }
                 }
             }))
-            print(f"[{bot_name}] SELECT_PROTOCOL sent")
 
         if op == 4:
             secret_key = vdata['d']['secret_key']
-            print(f"[{bot_name}] SESSION_DESCRIPTION received, key={len(secret_key)} bytes")
+            print(f"[{bot_name}] SESSION_DESCRIPTION received")
             break
 
         if op in (7, 9):
-            print(f"[{bot_name}] Voice disconnected op={op}")
             voice_ws.close()
             return
+
+    print(f"[{bot_name}] Voice connected! Now sending stream activate...")
+
+    try:
+        main_ws.send(json.dumps({
+            "op": 4,
+            "d": {
+                "guild_id": GUILD_ID,
+                "channel_id": None,
+                "self_mute": False,
+                "self_deaf": False,
+                "self_stream": True,
+                "self_video": True
+            }
+        }))
+        time.sleep(1)
+        main_ws.send(json.dumps({
+            "op": 4,
+            "d": {
+                "guild_id": GUILD_ID,
+                "channel_id": CHANNEL_ID,
+                "self_mute": False,
+                "self_deaf": False,
+                "self_stream": True,
+                "self_video": True
+            }
+        }))
+        print(f"[{bot_name}] Stream activate sent!")
+    except Exception as e:
+        print(f"[{bot_name}] Stream activate error: {e}")
 
     box = SecretBox(bytes(secret_key))
     sequence = 0
     timestamp = 0
-    print(f"[{bot_name}] Starting to send silence frames...")
 
     while True:
         try:
@@ -118,7 +142,7 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
             break
 
     voice_ws.close()
-    print(f"[{bot_name}] Voice connection closed")
+    print(f"[{bot_name}] Voice closed")
 
 
 def send_periodic_msg(token, name):
@@ -145,7 +169,7 @@ def vc_locker(token, name, is_xp_token=False):
 
     while True:
         try:
-            print(f"[{name}] Connecting to gateway...")
+            print(f"[{name}] Connecting gateway...")
             ws = websocket.WebSocket()
             ws.connect('wss://gateway.discord.gg/?v=9&encoding=json', timeout=15)
 
@@ -166,6 +190,7 @@ def vc_locker(token, name, is_xp_token=False):
             last_heartbeat = time.time()
             last_dice_roll = time.time()
             voice_thread = None
+            ready_sent = False
 
             while True:
                 try:
@@ -185,74 +210,47 @@ def vc_locker(token, name, is_xp_token=False):
 
                 if data.get('t') == "READY":
                     user_id = data['d']['user']['id']
-                    print(f"[{name}] READY, user_id={user_id}")
-
-                    print(f"[{name}] Sending: JOIN channel={CHANNEL_ID}")
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD_ID,
-                            "channel_id": CHANNEL_ID,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": True,
-                            "self_video": True
-                        }
-                    }))
-
-                    time.sleep(0.5)
-
-                    print(f"[{name}] Sending: LEAVE")
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD_ID,
-                            "channel_id": None,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": True,
-                            "self_video": True
-                        }
-                    }))
-
-                    time.sleep(0.5)
-
-                    print(f"[{name}] Sending: REJOIN channel={CHANNEL_ID}")
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD_ID,
-                            "channel_id": CHANNEL_ID,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": True,
-                            "self_video": True
-                        }
-                    }))
+                    print(f"[{name}] READY, user={user_id}")
+                    ready_sent = True
 
                 if data.get('t') == "VOICE_STATE_UPDATE":
                     d = data['d']
                     if d.get('user_id') == user_id:
-                        old_sid = session_id
                         session_id = d.get('session_id')
-                        print(f"[{name}] VOICE_STATE_UPDATE: channel={d.get('channel_id')} session={session_id}")
+                        ch = d.get('channel_id')
+                        print(f"[{name}] VOICE_STATE: ch={ch} sid={session_id}")
 
                 if data.get('t') == "VOICE_SERVER_UPDATE":
                     d = data['d']
                     if d.get('guild_id') == GUILD_ID and session_id:
                         endpoint = d['endpoint']
                         v_token = d['token']
-                        print(f"[{name}] VOICE_SERVER_UPDATE: endpoint={endpoint}")
+                        print(f"[{name}] VOICE_SERVER: {endpoint}")
 
                         if voice_thread is None or not voice_thread.is_alive():
                             def run_voice(ep=endpoint, vt=v_token, sid=session_id, uid=user_id):
                                 try:
-                                    do_voice(ep, vt, GUILD_ID, uid, sid, name)
+                                    do_voice(ep, vt, GUILD_ID, uid, sid, name, ws)
                                 except Exception as e:
                                     print(f"[{name}] Voice thread error: {e}")
 
                             voice_thread = threading.Thread(target=run_voice, daemon=True)
                             voice_thread.start()
+
+                if ready_sent and session_id:
+                    ready_sent = False
+                    print(f"[{name}] Sending initial JOIN")
+                    ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": GUILD_ID,
+                            "channel_id": CHANNEL_ID,
+                            "self_mute": False,
+                            "self_deaf": False,
+                            "self_stream": True,
+                            "self_video": True
+                        }
+                    }))
 
                 if is_xp_token and (time.time() - last_dice_roll > 60):
                     if random.randint(1, 400) == 77:
