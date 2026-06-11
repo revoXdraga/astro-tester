@@ -152,6 +152,7 @@ def vc_locker(token, name, is_xp_token=False):
             session_id = None
             last_heartbeat = time.time()
             last_dice_roll = time.time()
+            voice_started = False
 
             while True:
                 try:
@@ -185,27 +186,50 @@ def vc_locker(token, name, is_xp_token=False):
                         }
                     }))
 
+                    ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": GUILD_ID,
+                            "channel_id": None,
+                            "self_mute": False,
+                            "self_deaf": False,
+                            "self_stream": True,
+                            "self_video": True
+                        }
+                    }))
+
+                    ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": GUILD_ID,
+                            "channel_id": CHANNEL_ID,
+                            "self_mute": False,
+                            "self_deaf": False,
+                            "self_stream": True,
+                            "self_video": True
+                        }
+                    }))
+
                 if data.get('t') == "VOICE_STATE_UPDATE":
                     if data['d'].get('user_id') == user_id:
                         session_id = data['d'].get('session_id')
 
                 if data.get('t') == "VOICE_SERVER_UPDATE":
-                    if data['d'].get('guild_id') == GUILD_ID and session_id:
+                    if data['d'].get('guild_id') == GUILD_ID and session_id and not voice_started:
+                        voice_started = True
                         endpoint = data['d']['endpoint']
                         v_token = data['d']['token']
 
-                        try:
-                            do_voice(endpoint, v_token, GUILD_ID, user_id, session_id, name)
-                        except Exception as e:
-                            print(f"{name} voice error: {e}")
+                        def start_voice(ep=endpoint, vt=v_token, sid=session_id, uid=user_id):
+                            nonlocal voice_started
+                            try:
+                                do_voice(ep, vt, GUILD_ID, uid, sid, name)
+                            except Exception as e:
+                                print(f"{name} voice error: {e}")
+                            voice_started = False
+                            print(f"{name} voice ended.")
 
-                        print(f"{name} voice dropped, reconnecting voice in 3s...")
-                        time.sleep(3)
-
-                        try:
-                            do_voice(endpoint, v_token, GUILD_ID, user_id, session_id, name)
-                        except Exception as e:
-                            print(f"{name} voice error: {e}")
+                        threading.Thread(target=start_voice, daemon=True).start()
 
                 if is_xp_token and (time.time() - last_dice_roll > 60):
                     if random.randint(1, 400) == 77:
