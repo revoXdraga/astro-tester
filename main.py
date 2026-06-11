@@ -18,6 +18,28 @@ tokens = {
     "Sentinel XP": os.getenv("TOKEN_XP")
 }
 
+stream_join = {
+    "op": 4,
+    "d": {
+        "guild_id": GUILD,
+        "channel_id": CHANNEL,
+        "self_mute": False,
+        "self_deaf": False,
+        "self_stream": True,
+        "self_video": True
+    }
+}
+
+stream_lobby = {
+    "op": 18,
+    "d": {
+        "type": "guild",
+        "guild_id": GUILD,
+        "channel_id": CHANNEL,
+        "preferred_region": "singapore"
+    }
+}
+
 
 def send_periodic_msg(token, name):
     while True:
@@ -36,7 +58,7 @@ def send_periodic_msg(token, name):
         time.sleep(3600)
 
 
-def voice_heartbeat(voice_ws, interval, name):
+def voice_heartbeat(voice_ws, interval):
     while True:
         try:
             time.sleep(interval)
@@ -128,7 +150,7 @@ def do_voice_stream(endpoint, v_token, guild_id, user_id, session_id, bot_name, 
                     voice_ws.close()
                     raise Exception("Voice disconnected during protocol")
 
-            hb = threading.Thread(target=voice_heartbeat, args=(voice_ws, v_heartbeat_interval, bot_name), daemon=True)
+            hb = threading.Thread(target=voice_heartbeat, args=(voice_ws, v_heartbeat_interval), daemon=True)
             hb.start()
 
             box = SecretBox(secret_key)
@@ -163,12 +185,12 @@ def do_voice_stream(endpoint, v_token, guild_id, user_id, session_id, bot_name, 
             ffmpeg.terminate()
             udp.close()
             voice_ws.close()
-            print(f"[{bot_name}] FFmpeg ended, restarting in 2s...")
-            time.sleep(2)
+            print(f"[{bot_name}] FFmpeg ended, restarting in 1s...")
+            time.sleep(1)
 
         except Exception as e:
-            print(f"[{bot_name}] Voice error: {e}, reconnecting in 3s...")
-            time.sleep(3)
+            print(f"[{bot_name}] Voice error: {e}, reconnecting in 2s...")
+            time.sleep(2)
 
 
 def vc_locker(token, name, is_xp_token=False):
@@ -194,30 +216,9 @@ def vc_locker(token, name, is_xp_token=False):
 
             time.sleep(0.5)
 
-            ws.send(json.dumps({
-                "op": 4,
-                "d": {
-                    "guild_id": GUILD,
-                    "channel_id": CHANNEL,
-                    "self_mute": False,
-                    "self_deaf": False,
-                    "self_stream": True,
-                    "self_video": True
-                }
-            }))
-
+            ws.send(json.dumps(stream_join))
             time.sleep(1)
-
-            ws.send(json.dumps({
-                "op": 18,
-                "d": {
-                    "type": "guild",
-                    "guild_id": GUILD,
-                    "channel_id": CHANNEL,
-                    "preferred_region": "singapore"
-                }
-            }))
-
+            ws.send(json.dumps(stream_lobby))
             time.sleep(2)
             print(f"[{name}] Joined voice + lobby sent")
 
@@ -253,6 +254,17 @@ def vc_locker(token, name, is_xp_token=False):
                     d = data['d']
                     if d.get('user_id') == user_id:
                         session_id = d.get('session_id')
+                        current_channel = d.get('channel_id')
+                        if current_channel != CHANNEL:
+                            reason = "moved" if current_channel else "kicked"
+                            print(f"[{name}] {reason}, rejoining...")
+                            voice_started = False
+                            try:
+                                ws.send(json.dumps(stream_join))
+                                time.sleep(0.5)
+                                ws.send(json.dumps(stream_lobby))
+                            except Exception:
+                                break
 
                 if data.get('t') == "VOICE_SERVER_UPDATE":
                     d = data['d']
