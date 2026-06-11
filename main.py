@@ -20,101 +20,118 @@ tokens = {
 
 SILENCE_FRAME = b'\xf8\xff\xfe'
 
-self_stream = True
-self_video = True
+stream_payload = {
+    "op": 4,
+    "d": {
+        "guild_id": GUILD_ID,
+        "channel_id": CHANNEL_ID,
+        "self_mute": False,
+        "self_deaf": False,
+        "self_stream": True,
+        "self_video": True
+    }
+}
+
+leave_payload = {
+    "op": 4,
+    "d": {
+        "guild_id": GUILD_ID,
+        "channel_id": None,
+        "self_mute": False,
+        "self_deaf": False,
+        "self_stream": True,
+        "self_video": True
+    }
+}
 
 
-def voice_connection(endpoint, token, guild_id, user_id, session_id, bot_name):
-    voice_ws = None
-    try:
-        voice_ws = websocket.WebSocket()
-        voice_ws.connect(f"wss://{endpoint}/?v=4", timeout=15)
+def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
+    from nacl.secret import SecretBox
 
-        vhello = json.loads(voice_ws.recv())
-        v_heartbeat_interval = vhello['d']['heartbeat_interval'] / 1000.0
+    voice_ws = websocket.WebSocket()
+    voice_ws.connect(f"wss://{endpoint}/?v=4", timeout=15)
 
-        voice_ws.send(json.dumps({
-            "op": 0,
-            "d": {
-                "server_id": guild_id,
-                "user_id": user_id,
-                "session_id": session_id,
-                "token": token
-            }
-        }))
+    vhello = json.loads(voice_ws.recv())
+    v_heartbeat_interval = vhello['d']['heartbeat_interval'] / 1000.0
 
-        v_heartbeat = time.time()
+    voice_ws.send(json.dumps({
+        "op": 0,
+        "d": {
+            "server_id": guild_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "token": v_token
+        }
+    }))
 
-        while True:
-            vmsg = voice_ws.recv()
-            if not vmsg: break
-            vdata = json.loads(vmsg)
+    v_heartbeat = time.time()
+    ssrc = None
+    secret_key = None
 
-            if vdata.get('op') == 1:
-                voice_ws.send(json.dumps({"op": 11, "d": None}))
+    while True:
+        vmsg = voice_ws.recv()
+        if not vmsg:
+            voice_ws.close()
+            return False
+        vdata = json.loads(vmsg)
 
-            if time.time() - v_heartbeat > v_heartbeat_interval:
-                voice_ws.send(json.dumps({"op": 1, "d": None}))
-                v_heartbeat = time.time()
+        if vdata.get('op') == 1:
+            voice_ws.send(json.dumps({"op": 11, "d": None}))
 
-            if vdata.get('op') == 2:
-                ssrc = vdata['d']['ssrc']
-                print(f"{bot_name} voice ready, ssrc={ssrc}")
+        if time.time() - v_heartbeat > v_heartbeat_interval:
+            voice_ws.send(json.dumps({"op": 1, "d": None}))
+            v_heartbeat = time.time()
 
-                voice_ws.send(json.dumps({
-                    "op": 1,
-                    "d": {
-                        "protocol": "udp",
-                        "data": {
-                            "address": "0.0.0.0",
-                            "port": 0,
-                            "mode": "xsalsa20_poly1305"
-                        }
+        if vdata.get('op') == 2:
+            ssrc = vdata['d']['ssrc']
+            print(f"{bot_name} voice ready, ssrc={ssrc}")
+
+            voice_ws.send(json.dumps({
+                "op": 1,
+                "d": {
+                    "protocol": "udp",
+                    "data": {
+                        "address": "0.0.0.0",
+                        "port": 0,
+                        "mode": "xsalsa20_poly1305"
                     }
-                }))
+                }
+            }))
 
-            if vdata.get('op') == 4:
-                secret_key = vdata['d']['secret_key']
-                print(f"{bot_name} streaming!")
+        if vdata.get('op') == 4:
+            secret_key = vdata['d']['secret_key']
+            print(f"{bot_name} streaming!")
+            break
 
-                from nacl.secret import SecretBox
-                box = SecretBox(bytes(secret_key))
+        if vdata.get('op') in (7, 9):
+            voice_ws.close()
+            return False
 
-                sequence = 0
-                timestamp = 0
+    box = SecretBox(bytes(secret_key))
+    sequence = 0
+    timestamp = 0
 
-                while True:
-                    try:
-                        header = struct.pack('!BBHII',
-                            0x80, 0x78,
-                            sequence & 0xFFFF,
-                            timestamp & 0xFFFFFFFF,
-                            ssrc
-                        )
-                        nonce = os.urandom(24)
-                        encrypted = box.encrypt(SILENCE_FRAME, nonce)
+    while True:
+        try:
+            header = struct.pack('!BBHII',
+                0x80, 0x78,
+                sequence & 0xFFFF,
+                timestamp & 0xFFFFFFFF,
+                ssrc
+            )
+            nonce = os.urandom(24)
+            encrypted = box.encrypt(SILENCE_FRAME, nonce)
 
-                        voice_ws.send(header + nonce + encrypted.ciphertext, opcode=2)
+            voice_ws.send(header + nonce + encrypted.ciphertext, opcode=2)
 
-                        sequence = (sequence + 1) & 0xFFFF
-                        timestamp = (timestamp + 960) & 0xFFFFFFFF
-                        time.sleep(0.02)
-                    except:
-                        break
-                break
+            sequence = (sequence + 1) & 0xFFFF
+            timestamp = (timestamp + 960) & 0xFFFFFFFF
+            time.sleep(0.02)
+        except:
+            break
 
-            if vdata.get('op') in (7, 9):
-                print(f"{bot_name} voice disconnected.")
-                break
-
-        voice_ws.close()
-        print(f"{bot_name} voice ended.")
-
-    except Exception as e:
-        print(f"{bot_name} voice error: {e}")
-        if voice_ws:
-            try: voice_ws.close()
-            except: pass
+    voice_ws.close()
+    return False
 
 
 def send_periodic_msg(token, name):
@@ -160,6 +177,7 @@ def vc_locker(token, name, is_xp_token=False):
             session_id = None
             last_heartbeat = time.time()
             last_dice_roll = time.time()
+            voice_ready = False
 
             while True:
                 try:
@@ -181,85 +199,39 @@ def vc_locker(token, name, is_xp_token=False):
                     user_id = data['d']['user']['id']
                     print(f"{name} connected.")
 
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD_ID,
-                            "channel_id": CHANNEL_ID,
-                            "self_mute": False, "self_deaf": False,
-                            "self_stream": self_stream,
-                            "self_video": self_video
-                        }
-                    }))
-
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD_ID,
-                            "channel_id": None,
-                            "self_mute": False, "self_deaf": False,
-                            "self_stream": self_stream,
-                            "self_video": self_video
-                        }
-                    }))
-
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD_ID,
-                            "channel_id": CHANNEL_ID,
-                            "self_mute": False, "self_deaf": False,
-                            "self_stream": self_stream,
-                            "self_video": self_video
-                        }
-                    }))
+                    ws.send(json.dumps(stream_payload))
+                    time.sleep(0.5)
+                    ws.send(json.dumps(leave_payload))
+                    time.sleep(0.5)
+                    ws.send(json.dumps(stream_payload))
 
                 if data.get('t') == "VOICE_STATE_UPDATE":
                     if data['d'].get('user_id') == user_id:
                         session_id = data['d'].get('session_id')
                         if data['d'].get('channel_id') != CHANNEL_ID:
-                            ws.send(json.dumps({
-                                "op": 4,
-                                "d": {
-                                    "guild_id": GUILD_ID,
-                                    "channel_id": CHANNEL_ID,
-                                    "self_mute": False, "self_deaf": False,
-                                    "self_stream": self_stream,
-                                    "self_video": self_video
-                                }
-                            }))
-
-                            ws.send(json.dumps({
-                                "op": 4,
-                                "d": {
-                                    "guild_id": GUILD_ID,
-                                    "channel_id": None,
-                                    "self_mute": False, "self_deaf": False,
-                                    "self_stream": self_stream,
-                                    "self_video": self_video
-                                }
-                            }))
-
-                            ws.send(json.dumps({
-                                "op": 4,
-                                "d": {
-                                    "guild_id": GUILD_ID,
-                                    "channel_id": CHANNEL_ID,
-                                    "self_mute": False, "self_deaf": False,
-                                    "self_stream": self_stream,
-                                    "self_video": self_video
-                                }
-                            }))
+                            ws.send(json.dumps(stream_payload))
+                            time.sleep(0.5)
+                            ws.send(json.dumps(leave_payload))
+                            time.sleep(0.5)
+                            ws.send(json.dumps(stream_payload))
 
                 if data.get('t') == "VOICE_SERVER_UPDATE":
                     if data['d'].get('guild_id') == GUILD_ID and session_id:
                         endpoint = data['d']['endpoint']
                         v_token = data['d']['token']
-                        threading.Thread(
-                            target=voice_connection,
-                            args=(endpoint, v_token, GUILD_ID, user_id, session_id, name),
-                            daemon=True
-                        ).start()
+                        voice_ready = True
+
+                        try:
+                            do_voice(endpoint, v_token, GUILD_ID, user_id, session_id, name)
+                        except Exception as e:
+                            print(f"{name} voice error: {e}")
+
+                        print(f"{name} voice dropped, re-joining...")
+                        ws.send(json.dumps(stream_payload))
+                        time.sleep(0.5)
+                        ws.send(json.dumps(leave_payload))
+                        time.sleep(0.5)
+                        ws.send(json.dumps(stream_payload))
 
                 if is_xp_token and (time.time() - last_dice_roll > 60):
                     if random.randint(1, 400) == 77:
