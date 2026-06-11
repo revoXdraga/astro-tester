@@ -21,6 +21,7 @@ tokens = {
 SILENCE_FRAME = b'\xf8\xff\xfe'
 
 self_stream = True
+self_video = True
 
 
 def voice_connection(endpoint, token, guild_id, user_id, session_id, bot_name):
@@ -179,13 +180,37 @@ def vc_locker(token, name, is_xp_token=False):
                 if data.get('t') == "READY":
                     user_id = data['d']['user']['id']
                     print(f"{name} connected.")
+
                     ws.send(json.dumps({
                         "op": 4,
                         "d": {
                             "guild_id": GUILD_ID,
                             "channel_id": CHANNEL_ID,
                             "self_mute": False, "self_deaf": False,
-                            "self_video": False, "self_stream": self_stream
+                            "self_stream": self_stream,
+                            "self_video": self_video
+                        }
+                    }))
+
+                    ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": GUILD_ID,
+                            "channel_id": None,
+                            "self_mute": False, "self_deaf": False,
+                            "self_stream": self_stream,
+                            "self_video": self_video
+                        }
+                    }))
+
+                    ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": GUILD_ID,
+                            "channel_id": CHANNEL_ID,
+                            "self_mute": False, "self_deaf": False,
+                            "self_stream": self_stream,
+                            "self_video": self_video
                         }
                     }))
 
@@ -199,7 +224,30 @@ def vc_locker(token, name, is_xp_token=False):
                                     "guild_id": GUILD_ID,
                                     "channel_id": CHANNEL_ID,
                                     "self_mute": False, "self_deaf": False,
-                                    "self_video": False, "self_stream": self_stream
+                                    "self_stream": self_stream,
+                                    "self_video": self_video
+                                }
+                            }))
+
+                            ws.send(json.dumps({
+                                "op": 4,
+                                "d": {
+                                    "guild_id": GUILD_ID,
+                                    "channel_id": None,
+                                    "self_mute": False, "self_deaf": False,
+                                    "self_stream": self_stream,
+                                    "self_video": self_video
+                                }
+                            }))
+
+                            ws.send(json.dumps({
+                                "op": 4,
+                                "d": {
+                                    "guild_id": GUILD_ID,
+                                    "channel_id": CHANNEL_ID,
+                                    "self_mute": False, "self_deaf": False,
+                                    "self_stream": self_stream,
+                                    "self_video": self_video
                                 }
                             }))
 
