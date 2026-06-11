@@ -20,30 +20,6 @@ tokens = {
 
 SILENCE_FRAME = b'\xf8\xff\xfe'
 
-stream_payload = {
-    "op": 4,
-    "d": {
-        "guild_id": GUILD_ID,
-        "channel_id": CHANNEL_ID,
-        "self_mute": False,
-        "self_deaf": False,
-        "self_stream": True,
-        "self_video": True
-    }
-}
-
-leave_payload = {
-    "op": 4,
-    "d": {
-        "guild_id": GUILD_ID,
-        "channel_id": None,
-        "self_mute": False,
-        "self_deaf": False,
-        "self_stream": True,
-        "self_video": True
-    }
-}
-
 
 def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
     from nacl.secret import SecretBox
@@ -72,7 +48,7 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
         vmsg = voice_ws.recv()
         if not vmsg:
             voice_ws.close()
-            return False
+            return
         vdata = json.loads(vmsg)
 
         if vdata.get('op') == 1:
@@ -105,7 +81,7 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
 
         if vdata.get('op') in (7, 9):
             voice_ws.close()
-            return False
+            return
 
     box = SecretBox(bytes(secret_key))
     sequence = 0
@@ -131,7 +107,6 @@ def do_voice(endpoint, v_token, guild_id, user_id, session_id, bot_name):
             break
 
     voice_ws.close()
-    return False
 
 
 def send_periodic_msg(token, name):
@@ -177,7 +152,6 @@ def vc_locker(token, name, is_xp_token=False):
             session_id = None
             last_heartbeat = time.time()
             last_dice_roll = time.time()
-            voice_ready = False
 
             while True:
                 try:
@@ -199,39 +173,39 @@ def vc_locker(token, name, is_xp_token=False):
                     user_id = data['d']['user']['id']
                     print(f"{name} connected.")
 
-                    ws.send(json.dumps(stream_payload))
-                    time.sleep(0.5)
-                    ws.send(json.dumps(leave_payload))
-                    time.sleep(0.5)
-                    ws.send(json.dumps(stream_payload))
+                    ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": GUILD_ID,
+                            "channel_id": CHANNEL_ID,
+                            "self_mute": False,
+                            "self_deaf": False,
+                            "self_stream": True,
+                            "self_video": True
+                        }
+                    }))
 
                 if data.get('t') == "VOICE_STATE_UPDATE":
                     if data['d'].get('user_id') == user_id:
                         session_id = data['d'].get('session_id')
-                        if data['d'].get('channel_id') != CHANNEL_ID:
-                            ws.send(json.dumps(stream_payload))
-                            time.sleep(0.5)
-                            ws.send(json.dumps(leave_payload))
-                            time.sleep(0.5)
-                            ws.send(json.dumps(stream_payload))
 
                 if data.get('t') == "VOICE_SERVER_UPDATE":
                     if data['d'].get('guild_id') == GUILD_ID and session_id:
                         endpoint = data['d']['endpoint']
                         v_token = data['d']['token']
-                        voice_ready = True
 
                         try:
                             do_voice(endpoint, v_token, GUILD_ID, user_id, session_id, name)
                         except Exception as e:
                             print(f"{name} voice error: {e}")
 
-                        print(f"{name} voice dropped, re-joining...")
-                        ws.send(json.dumps(stream_payload))
-                        time.sleep(0.5)
-                        ws.send(json.dumps(leave_payload))
-                        time.sleep(0.5)
-                        ws.send(json.dumps(stream_payload))
+                        print(f"{name} voice dropped, reconnecting voice in 3s...")
+                        time.sleep(3)
+
+                        try:
+                            do_voice(endpoint, v_token, GUILD_ID, user_id, session_id, name)
+                        except Exception as e:
+                            print(f"{name} voice error: {e}")
 
                 if is_xp_token and (time.time() - last_dice_roll > 60):
                     if random.randint(1, 400) == 77:
