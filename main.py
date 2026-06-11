@@ -36,118 +36,139 @@ def send_periodic_msg(token, name):
         time.sleep(3600)
 
 
-def do_voice_stream(endpoint, v_token, guild_id, user_id, session_id, bot_name, main_ws):
-    from nacl.secret import SecretBox
-
-    voice_ws = websocket.WebSocket()
-    voice_ws.connect(f"wss://{endpoint}/?v=4", timeout=15)
-
-    vhello = json.loads(voice_ws.recv())
-    v_heartbeat_interval = vhello['d']['heartbeat_interval'] / 1000.0
-
-    voice_ws.send(json.dumps({
-        "op": 0,
-        "d": {
-            "server_id": guild_id,
-            "user_id": user_id,
-            "session_id": session_id,
-            "token": v_token
-        }
-    }))
-
-    ssrc = None
-    voice_ip = None
-    voice_port = None
-
+def voice_heartbeat(voice_ws, interval, name):
     while True:
-        vdata = json.loads(voice_ws.recv())
-        if vdata.get('op') == 2:
-            ssrc = vdata['d']['ssrc']
-            voice_ip = vdata['d']['ip']
-            voice_port = vdata['d']['port']
-            print(f"[{bot_name}] Voice READY: {voice_ip}:{voice_port} ssrc={ssrc}")
-            break
-        if vdata.get('op') in (7, 9):
-            voice_ws.close()
-            return
-
-    udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    udp.bind(('0.0.0.0', 0))
-    udp.settimeout(5)
-
-    ip_packet = bytearray(70)
-    struct.pack_into('!HHI', ip_packet, 0, 1, 70, ssrc)
-    udp.sendto(bytes(ip_packet), (voice_ip, voice_port))
-
-    try:
-        resp, _ = udp.recvfrom(70)
-        pub_ip = resp[8:72].rstrip(b'\x00').decode()
-        pub_port = struct.unpack('!H', resp[72:74])[0]
-    except Exception:
-        pub_ip = "0.0.0.0"
-        pub_port = udp.getsockname()[1]
-
-    print(f"[{bot_name}] UDP: {pub_ip}:{pub_port}")
-
-    voice_ws.send(json.dumps({
-        "op": 1,
-        "d": {
-            "protocol": "udp",
-            "data": {
-                "address": pub_ip,
-                "port": pub_port,
-                "mode": "xsalsa20_poly1305"
-            }
-        }
-    }))
-
-    secret_key = None
-    while True:
-        vdata = json.loads(voice_ws.recv())
-        if vdata.get('op') == 4:
-            secret_key = bytes(vdata['d']['secret_key'])
-            print(f"[{bot_name}] Got secret key, streaming video...")
-            break
-        if vdata.get('op') in (7, 9):
-            udp.close()
-            voice_ws.close()
-            return
-
-    box = SecretBox(secret_key)
-
-    ffmpeg = subprocess.Popen([
-        'ffmpeg', '-y',
-        '-f', 'lavfi', '-i', 'color=c=0x2f3136:s=1280x720:r=30',
-        '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
-        '-pix_fmt', 'yuv420p',
-        '-f', 'h264', 'pipe:1'
-    ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-    seq = 0
-    ts = 0
-
-    while True:
-        chunk = ffmpeg.stdout.read(4000)
-        if not chunk:
-            break
-
-        rtp = struct.pack('!BBHII', 0x80, 96, seq & 0xFFFF, ts & 0xFFFFFFFF, ssrc)
-        nonce = os.urandom(24)
-        enc = box.encrypt(chunk, nonce)
-
         try:
-            udp.sendto(rtp + nonce + enc.ciphertext, (voice_ip, voice_port))
+            time.sleep(interval)
+            voice_ws.send(json.dumps({"op": 1, "d": None}))
         except Exception:
             break
 
-        seq = (seq + 1) & 0xFFFF
-        ts = (ts + 1500) & 0xFFFFFFFF
-        time.sleep(0.033)
 
-    ffmpeg.terminate()
-    udp.close()
-    voice_ws.close()
-    print(f"[{bot_name}] Voice stream ended")
+def do_voice_stream(endpoint, v_token, guild_id, user_id, session_id, bot_name, main_ws):
+    from nacl.secret import SecretBox
+
+    while True:
+        try:
+            voice_ws = websocket.WebSocket()
+            voice_ws.connect(f"wss://{endpoint}/?v=4", timeout=None)
+
+            vhello = json.loads(voice_ws.recv())
+            v_heartbeat_interval = vhello['d']['heartbeat_interval'] / 1000.0
+
+            voice_ws.send(json.dumps({
+                "op": 0,
+                "d": {
+                    "server_id": guild_id,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "token": v_token
+                }
+            }))
+
+            ssrc = None
+            voice_ip = None
+            voice_port = None
+
+            while True:
+                vdata = json.loads(voice_ws.recv())
+                if vdata.get('op') == 1:
+                    voice_ws.send(json.dumps({"op": 11, "d": None}))
+                if vdata.get('op') == 2:
+                    ssrc = vdata['d']['ssrc']
+                    voice_ip = vdata['d']['ip']
+                    voice_port = vdata['d']['port']
+                    print(f"[{bot_name}] Voice READY: {voice_ip}:{voice_port} ssrc={ssrc}")
+                    break
+                if vdata.get('op') in (7, 9):
+                    voice_ws.close()
+                    raise Exception("Voice disconnected during handshake")
+
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.bind(('0.0.0.0', 0))
+            udp.settimeout(5)
+
+            ip_packet = bytearray(70)
+            struct.pack_into('!HHI', ip_packet, 0, 1, 70, ssrc)
+            udp.sendto(bytes(ip_packet), (voice_ip, voice_port))
+
+            try:
+                resp, _ = udp.recvfrom(70)
+                pub_ip = resp[8:72].rstrip(b'\x00').decode()
+                pub_port = struct.unpack('!H', resp[72:74])[0]
+            except Exception:
+                pub_ip = "0.0.0.0"
+                pub_port = udp.getsockname()[1]
+
+            print(f"[{bot_name}] UDP: {pub_ip}:{pub_port}")
+
+            voice_ws.send(json.dumps({
+                "op": 1,
+                "d": {
+                    "protocol": "udp",
+                    "data": {
+                        "address": pub_ip,
+                        "port": pub_port,
+                        "mode": "xsalsa20_poly1305"
+                    }
+                }
+            }))
+
+            secret_key = None
+            while True:
+                vdata = json.loads(voice_ws.recv())
+                if vdata.get('op') == 1:
+                    voice_ws.send(json.dumps({"op": 11, "d": None}))
+                if vdata.get('op') == 4:
+                    secret_key = bytes(vdata['d']['secret_key'])
+                    print(f"[{bot_name}] Got secret key, streaming video...")
+                    break
+                if vdata.get('op') in (7, 9):
+                    udp.close()
+                    voice_ws.close()
+                    raise Exception("Voice disconnected during protocol")
+
+            hb = threading.Thread(target=voice_heartbeat, args=(voice_ws, v_heartbeat_interval, bot_name), daemon=True)
+            hb.start()
+
+            box = SecretBox(secret_key)
+
+            ffmpeg = subprocess.Popen([
+                'ffmpeg', '-y',
+                '-f', 'lavfi', '-i', 'color=c=0x2f3136:s=1280x720:r=30',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency',
+                '-pix_fmt', 'yuv420p',
+                '-f', 'h264', 'pipe:1'
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+            seq = 0
+            ts = 0
+
+            while True:
+                chunk = ffmpeg.stdout.read(4000)
+                if not chunk:
+                    ffmpeg.wait()
+                    break
+
+                rtp = struct.pack('!BBHII', 0x80, 96, seq & 0xFFFF, ts & 0xFFFFFFFF, ssrc)
+                nonce = os.urandom(24)
+                enc = box.encrypt(chunk, nonce)
+
+                udp.sendto(rtp + nonce + enc.ciphertext, (voice_ip, voice_port))
+
+                seq = (seq + 1) & 0xFFFF
+                ts = (ts + 1500) & 0xFFFFFFFF
+                time.sleep(0.033)
+
+            ffmpeg.terminate()
+            udp.close()
+            voice_ws.close()
+            print(f"[{bot_name}] FFmpeg ended, restarting in 2s...")
+            time.sleep(2)
+
+        except Exception as e:
+            print(f"[{bot_name}] Voice error: {e}, reconnecting in 3s...")
+            time.sleep(3)
 
 
 def vc_locker(token, name, is_xp_token=False):
@@ -250,38 +271,6 @@ def vc_locker(token, name, is_xp_token=False):
                             voice_started = False
 
                         threading.Thread(target=start_voice, daemon=True).start()
-
-                try:
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD,
-                            "channel_id": None,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": True,
-                            "self_video": True
-                        }
-                    }))
-                except Exception:
-                    break
-
-                time.sleep(1)
-
-                try:
-                    ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": GUILD,
-                            "channel_id": CHANNEL,
-                            "self_mute": False,
-                            "self_deaf": False,
-                            "self_stream": True,
-                            "self_video": True
-                        }
-                    }))
-                except Exception:
-                    break
 
                 if is_xp_token and (time.time() - last_dice_roll > 60):
                     if random.randint(1, 400) == 77:
